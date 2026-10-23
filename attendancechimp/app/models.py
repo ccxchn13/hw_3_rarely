@@ -4,10 +4,13 @@ Data model for AttendanceChimp, an electronic class attendance tool.
 Tables: InstructorProfile, StudentProfile, Course, Enrollment, Lecture,
 QRCodeUpload. Enrollment links students to courses (many-to-many). 
 
+Each profile is linked one-to-one to Django's built-in User table (auth_user), which stores the login account.
+
 Each Lecture belongs to a Course, and each QRCodeUpload belongs to a student and,
 once its QR code is matched, a lecture.
 """
 from django.db import models
+from django.contrib.auth.models import User
 
 class InstructorProfile(models.Model):
     """
@@ -16,10 +19,14 @@ class InstructorProfile(models.Model):
  
     Attributes:
         instructor_id (PK): Auto-incrementing integer
+        user (FK, unique): One-to-one link to Django's built-in User, which handles login
+      (column user_id). Each login account can have at most one
+      instructor profile. Deleting the account deletes the profile.
         first_name: The instructor's first name.
         last_name:  The instructor's last name.
     """
     instructor_id = models.AutoField(primary_key=True)
+    user = models.OneToOneField(User, on_delete=models.CASCADE)  # login account; column user_id
     first_name = models.CharField(max_length=150)
     last_name = models.CharField(max_length=150)
  
@@ -31,11 +38,15 @@ class StudentProfile(models.Model):
  
     Attributes:
         student_id (PK): Auto-incrementing integer
+        user (FK, unique): One-to-one link to Django's built-in User, which handles login
+      (column user_id). Each login account can have at most one
+      student profile. Deleting the account deletes the profile.
         first_name: The student's first name.
         last_name:  The student's last name.
     """
 
-    student_id = models.AutoField(primary_key=True) 
+    student_id = models.AutoField(primary_key=True)
+    user = models.OneToOneField(User, on_delete=models.CASCADE)  # login account; column user_id 
     first_name = models.CharField(max_length=150)
     last_name = models.CharField(max_length=150)
  
@@ -48,7 +59,7 @@ class Course(models.Model):
     The schedule can be used to check if the QR Code is uploaded during the lecture time.
  
     Attributes:
-        course_id(PK): Auto-incrementing integer.
+        course_id (PK): Auto-incrementing integer.
         name: The course name.
         instructor: The InstructorProfile who teaches the course (column instructor_id). 
                     An instructor who still has courses cannot be deleted.
