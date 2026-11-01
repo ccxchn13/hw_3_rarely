@@ -80,18 +80,24 @@ class Enrollment(models.Model):
     """
     One student enrolled in one course.
     This is the junction table that makes students <-> courses many-to-many.
-    Each row links exactly one student to exactly one course, 
+    Each row links exactly one student to exactly one course,
     while a student can have many enrollments and a course can have many students.
- 
-    The primary key is the pair (student_id, course_id). The database rejects enrolling the same student in the same course twice.
- 
+
+    The pair (student_id, course_id) must be unique, so the database rejects enrolling the same student in the same course twice.
+
     Attributes:
+        enrollment_id (PK): Auto-incrementing integer.
         student: The enrolled StudentProfile (column student_id), deleting a student removes their enrollments.
         course:  The Course (column course_id), deleting a course removes its enrollments.
     """
-    pk = models.CompositePrimaryKey("student_id", "course_id")  
+    enrollment_id = models.AutoField(primary_key=True)  # auto-incrementing integer
     student = models.ForeignKey(StudentProfile, on_delete=models.CASCADE)  # column student_id
     course = models.ForeignKey(Course, on_delete=models.CASCADE)  # column course_id
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["student", "course"], name="unique_enrollment"),
+        ]
  
  
 class Lecture(models.Model):
