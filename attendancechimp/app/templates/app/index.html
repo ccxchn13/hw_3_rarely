@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>AttendanceChimp</title>
+  <style>
+    body { font-family: sans-serif; text-align: center; margin-top: 3rem; }
+  </style>
+</head>
+<body>
+  <h1>AttendanceChimp</h1>
+  <p>AttendanceChimp replaces paper sign-in sheets: instructors project a QR code in class,
+     and students record their attendance by uploading a photo of it.</p>
+
+  {% if username %}
+    <p>Logged in as <b>{{ username }}</b></p>
+    <form method="post" action="{% url 'logout' %}">
+      {% csrf_token %}
+      <input type="submit" value="Log out">
+    </form>
+  {% else %}
+    <p>Not logged in.</p>
+    <p><a href="{% url 'login' %}">Log in</a> or <a href="/app/new">sign up</a></p>
+  {% endif %}
+
+  <p>Current time (CST): {{ current_time }}</p>
+</body>
+</html>
