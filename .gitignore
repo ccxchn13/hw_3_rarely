@@ -1,0 +1,14 @@
+# Python caches
+__pycache__/
+*.pyc
+
+# macOS Finder files
+.DS_Store
+
+# Local Django data: the autograder builds its own
+attendancechimp/db.sqlite3
+attendancechimp/media/
+
+# Generated migrations (keep the package's __init__.py so makemigrations finds the app)
+attendancechimp/app/migrations/*
+!attendancechimp/app/migrations/__init__.py

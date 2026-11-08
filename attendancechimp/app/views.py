@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import secrets
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo
@@ -7,12 +8,14 @@ from zoneinfo import ZoneInfo
 from django.contrib.auth import login
 from django.contrib.auth.models import User
 from django.db import transaction
-from django.http import HttpRequest, HttpResponse, HttpResponseBadRequest
+from django.http import HttpRequest, HttpResponse, HttpResponseBadRequest, JsonResponse
 from django.shortcuts import render
+from django.utils import timezone
+from django.utils.dateparse import parse_time
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST
 
-from .models import InstructorProfile, StudentProfile
+from .models import Course, InstructorProfile, Lecture, QRCodeUpload, StudentProfile
 
 CDT = ZoneInfo("America/Chicago")
 
@@ -103,6 +106,181 @@ def createUser(request):
 # ---------------------------------------------------------------------------
 
 
+# Form field name -> meeting_days letter
+DAY_FIELDS = [
+    ("day-mon", "M"),
+    ("day-tue", "T"),
+    ("day-wed", "W"),
+    ("day-thu", "R"),
+    ("day-fri", "F"),
+]
+ 
+ 
+def _instructor_of(request):
+    """Return the logged-in user's InstructorProfile, or None if there isn't one."""
+    if not request.user.is_authenticated:
+        return None
+    return InstructorProfile.objects.filter(user=request.user).first()
+ 
+ 
+def _student_of(request):
+    """Return the logged-in user's StudentProfile, or None if there isn't one."""
+    if not request.user.is_authenticated:
+        return None
+    return StudentProfile.objects.filter(user=request.user).first()
+ 
+ 
+def _unauthorized(role):
+    """HTTP 401 response for a request from someone without the required role."""
+    return HttpResponse(f"Unauthorized: you must be logged in as {role}.", status=401)
+ 
+ 
+def _box_checked(request, field):
+    """True if a checkbox field was sent (browsers send "on"), unless it says 0/false/off/no."""
+    return field in request.POST and request.POST[field].strip().lower() not in ("0", "false", "off", "no")
+ 
+ 
+@require_GET
+def new_course(request):
+    """Form for creating a course; submits to /app/createCourse."""
+    return render(request, "app/new_course.html")
+ 
+ 
+@require_GET
+def new_lecture(request):
+    """Form for creating a lecture; the dropdown lists every course by name."""
+    courses = Course.objects.order_by("name")
+    return render(request, "app/new_lecture.html", {"courses": courses})
+ 
+ 
+@require_GET
+def new_qr_upload(request):
+    """Form for uploading a photo of a QR code; submits to /app/createQRCodeUpload."""
+    return render(request, "app/new_qr_upload.html")
+ 
+ 
+@csrf_exempt
+@require_POST
+def createCourse(request):
+    """
+    Create a Course taught by the logged-in instructor.
+ 
+    POST fields: course-name, start-time, end-time (HH:MM), and one or more of
+    day-mon ... day-fri. Returns 200 on success, 401 if the user is not an
+    instructor, and 400 for missing or invalid fields.
+    """
+    instructor = _instructor_of(request)
+    if instructor is None:
+        return _unauthorized("an instructor")
+ 
+    name = request.POST.get("course-name", "").strip()
+    start_raw = request.POST.get("start-time", "").strip()
+    end_raw = request.POST.get("end-time", "").strip()
+    meeting_days = "".join(letter for field, letter in DAY_FIELDS if _box_checked(request, field))
+ 
+    if not name or not start_raw or not end_raw or not meeting_days:
+        return HttpResponseBadRequest(
+            "Required: course-name, start-time, end-time, and at least one of day-mon ... day-fri."
+        )
+    try:
+        start_time = parse_time(start_raw)
+        end_time = parse_time(end_raw)
+    except ValueError:
+        start_time = end_time = None
+    if start_time is None or end_time is None:
+        return HttpResponseBadRequest("start-time and end-time must be times like 09:30.")
+ 
+    course = Course.objects.create(
+        name=name,
+        instructor=instructor,
+        meeting_days=meeting_days,
+        start_time=start_time,
+        end_time=end_time,
+    )
+    return HttpResponse(
+        f"Created course {course.name} (meets {meeting_days}, "
+        f"{start_time:%H:%M}-{end_time:%H:%M})."
+    )
+ 
+ 
+@csrf_exempt
+@require_POST
+def createLecture(request):
+    """
+    Create a Lecture for today in the course named by the POST field `choice`.
+ 
+    A random, unique qr_identifier is generated for the lecture. Returns 200 on
+    success, 401 if the user is not an instructor, and 400 if the course is
+    missing or unknown.
+    """
+    instructor = _instructor_of(request)
+    if instructor is None:
+        return _unauthorized("an instructor")
+ 
+    course_name = request.POST.get("choice", "").strip()
+    if not course_name:
+        return HttpResponseBadRequest("Required: choice (a course name).")
+    course = Course.objects.filter(name=course_name).order_by("-course_id").first()
+    if course is None:
+        return HttpResponseBadRequest(f"No course named {course_name!r}.")
+ 
+    lecture = Lecture.objects.create(
+        course=course,
+        date=timezone.localdate(),
+        qr_identifier=secrets.token_urlsafe(16),
+    )
+    return HttpResponse(
+        f"Created lecture for {course.name} on {lecture.date} "
+        f"(QR identifier: {lecture.qr_identifier})."
+    )
+ 
+ 
+@csrf_exempt
+@require_POST
+def createQRCodeUpload(request):
+    """
+    Save a QR-code photo uploaded by the logged-in student.
+ 
+    Expects a file field named imageUpload (the form must use
+    enctype="multipart/form-data"). The student comes from the login and the
+    time is set by the server; the lecture stays empty until the QR code is
+    decoded and matched. Returns 200 on success, 401 if the user is not a
+    student, and 400 if no file was sent.
+    """
+    student = _student_of(request)
+    if student is None:
+        return _unauthorized("a student")
+ 
+    image = request.FILES.get("imageUpload")
+    if image is None:
+        return HttpResponseBadRequest(
+            'Required: a file field named imageUpload (enctype="multipart/form-data").'
+        )
+ 
+    upload = QRCodeUpload.objects.create(student=student, image_uploaded=image)
+    uploaded_at = timezone.localtime(upload.time_uploaded)
+    return HttpResponse(f"Upload {upload.upload_id} received at {uploaded_at:%Y-%m-%d %H:%M:%S}.")
+ 
+ 
+@require_GET
+def dumpUploads(request):
+    """
+    JSON list of every upload: [{"username": ..., "upload_time": "YYYY-MM-DD HH:MM:SS"}, ...].
+ 
+    Times are in Central time. Returns 401 if the user is not an instructor.
+    """
+    if _instructor_of(request) is None:
+        return _unauthorized("an instructor")
+ 
+    uploads = QRCodeUpload.objects.select_related("student__user").order_by("time_uploaded")
+    data = [
+        {
+            "username": upload.student.user.username,
+            "upload_time": timezone.localtime(upload.time_uploaded).strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        for upload in uploads
+    ]
+    return JsonResponse(data, safe=False)
 
 # ---------------------------------------------------------------------------
 # HW6  — getUploads

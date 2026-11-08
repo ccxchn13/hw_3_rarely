@@ -65,3 +65,7 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 LOGIN_REDIRECT_URL = "/app/"
 LOGOUT_REDIRECT_URL = "/app/"
+
+# Uploaded files (QR-code photos) are saved under attendancechimp/media/
+MEDIA_URL = "media/"
+MEDIA_ROOT = BASE_DIR / "media"

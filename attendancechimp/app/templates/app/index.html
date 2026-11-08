@@ -18,6 +18,8 @@
       {% csrf_token %}
       <input type="submit" value="Log out">
     </form>
+    <p><a href="/app/new_course">New course</a> · <a href="/app/new_lecture">New lecture</a> ·
+       <a href="/app/new_qr_upload">Upload QR code</a></p>
   {% else %}
     <p>Not logged in.</p>
     <p><a href="{% url 'login' %}">Log in</a> or <a href="/app/new">sign up</a></p>
