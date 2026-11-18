@@ -19,6 +19,9 @@ urlpatterns = [
     path('createQRCodeUpload', views.createQRCodeUpload, name='createQRCodeUpload'),
     path('dumpUploads', views.dumpUploads, name='dumpUploads'),
 
+    # HW6
+    path('getUploads', views.getUploads, name='getUploads'),
+
     # HW2
     path('time', views.time_view, name='time'),
     path('sum', views.sum_view, name='sum'),

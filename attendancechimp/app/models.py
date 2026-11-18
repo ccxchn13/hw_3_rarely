@@ -9,8 +9,17 @@ Each profile is linked one-to-one to Django's built-in User table (auth_user), w
 Each Lecture belongs to a Course, and each QRCodeUpload belongs to a student and,
 once its QR code is matched, a lecture.
 """
+from zoneinfo import ZoneInfo
+
 from django.db import models
 from django.contrib.auth.models import User
+from django.utils import timezone
+
+CHICAGO = ZoneInfo("America/Chicago")
+
+# One letter per weekday, in datetime.weekday() order (Monday = 0 ... Sunday = 6).
+# R is Thursday and U is Sunday, so every day has its own letter.
+DAY_LETTERS = "MTWRFSU"
 
 class InstructorProfile(models.Model):
     """
@@ -60,7 +69,8 @@ class Course(models.Model):
  
     Attributes:
         course_id (PK): Auto-incrementing integer.
-        name: The course name.
+        name: The course number, e.g. "DATA13600" (sent as course-name when the course is created). 
+                Course numbers are unique, so this identifies the course.
         instructor: The InstructorProfile who teaches the course (column instructor_id). 
                     An instructor who still has courses cannot be deleted.
                     Deleting a person can never silently wipe out courses and attendance history.
@@ -75,6 +85,17 @@ class Course(models.Model):
     meeting_days = models.CharField(max_length=7)  
     start_time = models.TimeField()
     end_time = models.TimeField()
+    
+    def meets_on_day(self, weekday):
+        """
+        Return True if the course meets on the given weekday.
+
+        Input: weekday as a number, Monday = 0 ... Sunday = 6 (what datetime.weekday() returns).
+        It is turned into a letter with DAY_LETTERS (R = Thursday) and looked up in meeting_days.
+        Weekends (S, U) are never in meeting_days, so they always return False.
+        """
+        return DAY_LETTERS[weekday] in self.meeting_days
+
 
 class Enrollment(models.Model):
     """
@@ -135,8 +156,10 @@ class QRCodeUpload(models.Model):
         lecture: The Lecture the photo was matched to (column lecture_id). Empty until the photo's QR code is decoded and matched.
                  It stays empty if the code matches no lecture (unreadable, old, or forged), so the upload is kept as evidence.
                  SET_NULL: deleting a lecture keeps its uploads but clears the link.
-        time_uploaded: Set automatically by the server when the upload is saved, so students cannot fake it. 
-                       An upload counts as attendance only if it falls on the lecture's date, on a course meeting day, between start_time and end_time.
+        time_uploaded: Defaults to the server's current time when the upload is created.
+                       The upload view never reads a time from the request, so students cannot fake it.
+                       An upload counts as attendance only if, in Chicago time, it falls on a course
+                       meeting day, between start_time and end_time (see getUploadsForCourse).
         image_uploaded: The uploaded photo (stored as a file path).
     """
 
@@ -144,5 +167,44 @@ class QRCodeUpload(models.Model):
     student = models.ForeignKey(StudentProfile, on_delete=models.CASCADE)  # column student_id
     lecture = models.ForeignKey(Lecture, on_delete=models.SET_NULL,
                                 null=True, blank=True)  # column lecture_id, may be empty
-    time_uploaded = models.DateTimeField(auto_now_add=True)  # set by the server
+    time_uploaded = models.DateTimeField(default=timezone.now)  # server time when created
     image_uploaded = models.FileField(upload_to="qr_uploads/")
+
+def getUploadsForCourse(course):
+    """
+    Return the uploads that count as valid attendance for one course.
+
+    Input:  course, a course number such as "DATA13600" (stored in Course.name).
+    Output: a Python list of QRCodeUpload objects, oldest first.
+            An empty list if no course has that number.
+
+    Checks:
+        1. The course number must refer to an existing course.
+        2. Only uploads linked to that course through Upload -> Lecture -> Course are
+           considered, so uploads not matched to a lecture are left out.
+        3. An upload is valid only if, in Chicago time,
+           a. it was made on a day the course meets (meeting_days), and
+           b. its time of day is between start_time and end_time (inclusive).
+    Timestamps are stored in UTC, so each one is converted to Chicago time before
+    the day and time are checked.
+    """
+    # Newest course with this number: the same rule createLecture uses.
+    course_obj = Course.objects.filter(name=course).order_by("-course_id").first()
+    if course_obj is None:
+        return []
+
+    uploads = (
+        QRCodeUpload.objects
+        .filter(lecture__course=course_obj)
+        .select_related("student__user")
+        .order_by("time_uploaded")
+    )
+
+    valid = []
+    for upload in uploads:
+        local = timezone.localtime(upload.time_uploaded, CHICAGO)
+        on_meeting_day = course_obj.meets_on_day(local.weekday())
+        during_class = course_obj.start_time <= local.time() <= course_obj.end_time
+        if on_meeting_day and during_class:
+            valid.append(upload)
+    return valid

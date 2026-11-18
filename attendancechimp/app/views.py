@@ -15,8 +15,7 @@ from django.utils.dateparse import parse_time
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST
 
-from .models import Course, InstructorProfile, Lecture, QRCodeUpload, StudentProfile
-
+from .models import Course, InstructorProfile, Lecture, QRCodeUpload, StudentProfile, getUploadsForCourse
 CDT = ZoneInfo("America/Chicago")
 
 # ---------------------------------------------------------------------------
@@ -286,3 +285,29 @@ def dumpUploads(request):
 # HW6  — getUploads
 # ---------------------------------------------------------------------------
 
+@require_GET
+def getUploads(request):
+    """
+    JSON list of the valid uploads for one course:
+    [{"username": ..., "upload_time": "YYYY-MM-DD HH:MM:SS"}, ...].
+
+    Query parameter: course, a course number, e.g. /app/getUploads?course=DATA13600.
+    Only uploads made on a meeting day during class time are listed. Times are in Central time.
+    Returns 401 if the user is not an instructor, 400 if course is missing,
+    and an empty list if no course has that number.
+    """
+    if _instructor_of(request) is None:
+        return _unauthorized("an instructor")
+
+    course = request.GET.get("course", "").strip()
+    if not course:
+        return JsonResponse({"error": "Missing course parameter"}, status=400)
+
+    data = [
+        {
+            "username": upload.student.user.username,
+            "upload_time": timezone.localtime(upload.time_uploaded, CDT).strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        for upload in getUploadsForCourse(course)
+    ]
+    return JsonResponse(data, safe=False)
