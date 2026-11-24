@@ -14,6 +14,8 @@ from zoneinfo import ZoneInfo
 from django.db import models
 from django.contrib.auth.models import User
 from django.utils import timezone
+from PIL import Image
+from pyzbar import pyzbar
 
 CHICAGO = ZoneInfo("America/Chicago")
 
@@ -132,10 +134,10 @@ class Lecture(models.Model):
         lecture_id: Auto-incrementing primary key.
         course: The Course this meeting belongs to (column course_id), deleting a course removes its lectures.
         date: The date of the meeting.
-        qr_identifier: A random, unique token encoded in this lecture's QR code.
+        qr_identifier: The unique text encoded in this lecture's QR code: the qrdata value sent to
+                       createLecture, or 16 random letters and digits if none was sent.
                        Unique (so each token identifies exactly one lecture)
-                       Random (so a code from another lecture or a guessed code matches nothing) 
-                       Only the text is stored; the QR image can be regenerated from it whenever it is displayed.
+                       Random when generated (so a guessed code matches nothing)
     """
     lecture_id = models.AutoField(primary_key=True)  
     course = models.ForeignKey(Course, on_delete=models.CASCADE)  # column course_id
@@ -208,3 +210,25 @@ def getUploadsForCourse(course):
         if on_meeting_day and during_class:
             valid.append(upload)
     return valid
+
+def decodeQR(image):
+    """
+    Return the text encoded in an image's QR code, or None if there is no readable one.
+
+    Input:  image, an image file: an uploaded file such as request.FILES["imageUpload"],
+            or a file opened with open(path, "rb").
+    Output: the QR code's text as a string, or None if the file is not an image, has no
+            QR code, or the code's data is not UTF-8 text. It never raises an exception.
+
+    Only QR codes are looked for (not other barcode types such as product barcodes), and an
+    image is assumed to contain at most one, so the first one found is used.
+    """
+    try:
+        with Image.open(image) as picture:
+            codes = pyzbar.decode(picture, symbols=[pyzbar.ZBarSymbol.QRCODE])
+        if not codes:
+            return None
+        return codes[0].data.decode("utf-8")
+    except Exception:
+        # Not an image, a damaged file, or undecodable data: treat it as "no QR code".
+        return None

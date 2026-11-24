@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import secrets
+import string
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo
@@ -15,7 +16,7 @@ from django.utils.dateparse import parse_time
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST
 
-from .models import Course, InstructorProfile, Lecture, QRCodeUpload, StudentProfile, getUploadsForCourse
+from .models import Course, InstructorProfile, Lecture, QRCodeUpload, StudentProfile, decodeQR, getUploadsForCourse
 CDT = ZoneInfo("America/Chicago")
 
 # ---------------------------------------------------------------------------
@@ -201,6 +202,13 @@ def createCourse(request):
         f"{start_time:%H:%M}-{end_time:%H:%M})."
     )
  
+# Characters for generated QR identifiers: printable ASCII letters and digits.
+QR_ALPHABET = string.ascii_letters + string.digits
+
+
+def _random_qr_identifier():
+    """Return 16 random letters and digits, using the secrets module so it can't be guessed."""
+    return "".join(secrets.choice(QR_ALPHABET) for _ in range(16))
  
 @csrf_exempt
 @require_POST
@@ -208,9 +216,10 @@ def createLecture(request):
     """
     Create a Lecture for today in the course named by the POST field `choice`.
  
-    A random, unique qr_identifier is generated for the lecture. Returns 200 on
-    success, 401 if the user is not an instructor, and 400 if the course is
-    missing or unknown.
+    The lecture's qr_identifier is the optional POST field `qrdata`, used exactly as
+    sent; without it, 16 random letters and digits are generated. Returns 200 on
+    success, 401 if the user is not an instructor, and 400 if the course is missing
+    or unknown, or if another lecture already uses that QR identifier.
     """
     instructor = _instructor_of(request)
     if instructor is None:
@@ -223,28 +232,38 @@ def createLecture(request):
     if course is None:
         return HttpResponseBadRequest(f"No course named {course_name!r}.")
  
+    qrdata = request.POST.get("qrdata", "")
+    qr_identifier = qrdata if qrdata else _random_qr_identifier()
+    if Lecture.objects.filter(qr_identifier=qr_identifier).exists():
+        return HttpResponseBadRequest(f"Another lecture already uses the QR identifier {qr_identifier!r}.")
+
     lecture = Lecture.objects.create(
         course=course,
         date=timezone.localdate(),
-        qr_identifier=secrets.token_urlsafe(16),
+        qr_identifier=qr_identifier,
     )
     return HttpResponse(
         f"Created lecture for {course.name} on {lecture.date} "
         f"(QR identifier: {lecture.qr_identifier})."
     )
- 
- 
+
 @csrf_exempt
 @require_POST
 def createQRCodeUpload(request):
     """
-    Save a QR-code photo uploaded by the logged-in student.
+    Save a QR-code photo uploaded by the logged-in student and link it to its lecture.
  
     Expects a file field named imageUpload (the form must use
     enctype="multipart/form-data"). The student comes from the login and the
-    time is set by the server; the lecture stays empty until the QR code is
-    decoded and matched. Returns 200 on success, 401 if the user is not a
-    student, and 400 if no file was sent.
+    time is set by the server. The photo is decoded with decodeQR and matched to
+    the lecture whose qr_identifier equals the decoded text.
+ 
+    Every upload is stored, valid or not, so invalid attempts stay on record:
+      - QR code matches a lecture: stored with that lecture, HTTP 200.
+      - No readable QR code, or no matching lecture: stored with no lecture,
+        HTTP 400 {"error": "Invalid QR code"}.
+    Returns 401 if the user is not a student (nothing is stored) and 400 if no
+    file was sent.
     """
     student = _student_of(request)
     if student is None:
@@ -255,11 +274,22 @@ def createQRCodeUpload(request):
         return HttpResponseBadRequest(
             'Required: a file field named imageUpload (enctype="multipart/form-data").'
         )
- 
-    upload = QRCodeUpload.objects.create(student=student, image_uploaded=image)
-    uploaded_at = timezone.localtime(upload.time_uploaded)
-    return HttpResponse(f"Upload {upload.upload_id} received at {uploaded_at:%Y-%m-%d %H:%M:%S}.")
- 
+    text = decodeQR(image)
+    lecture = Lecture.objects.filter(qr_identifier=text).first() if text else None
+
+    # Store the upload first, valid or not, so invalid attempts are still recorded.
+    upload = QRCodeUpload.objects.create(student=student, lecture=lecture, image_uploaded=image)
+    if lecture is None:
+        return JsonResponse({"error": "Invalid QR code"}, status=400)
+
+    return JsonResponse({
+        "status": "ok",
+        "upload_id": upload.upload_id,
+        "course": lecture.course.name,
+        "lecture_date": str(lecture.date),
+        "upload_time": timezone.localtime(upload.time_uploaded, CDT).strftime("%Y-%m-%d %H:%M:%S"),
+    }) 
+
  
 @require_GET
 def dumpUploads(request):
